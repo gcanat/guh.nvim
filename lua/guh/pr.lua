@@ -443,20 +443,27 @@ end
 --- Each action opens an editable `guh://<owner>/<repo>/review/<id>` buffer for the (optional) body.
 function M.review_pr()
   local _, id, repo = require_pr()
-
+  local pr, _ = state.get_pr_data(repo, id)
+  if not pr then
+    return util.msg(('PR #%s not found'):format(id), vim.log.levels.ERROR)
+  end
   local function do_action(label)
-    local gh_action = label:lower()
+    local gh_action, _ = label:upper():gsub('-', '_')
     local heading = ('%s PR #%s'):format(label, id)
     -- Prefill ":+1:" in the Approve body, so the user can Approve without writing a comment. #64
     local content = label == 'Approve' and { ':+1:' } or { '' }
     comments.edit_comment('review', id, content, { title = heading }, function(input)
       local body = vim.trim(input)
       local done = util.progress(('%s…'):format(heading))
-      gh.review_pr(id, repo, gh_action, body, function(ok, stderr)
-        if ok then
-          done('success')
+      gh.submit_review(id, pr, gh_action, body, function(resp)
+        if resp['errors'] then
+          local errs = {}
+          for err in resp['errors'] do
+            table.insert(errs, err['message'])
+          end
+          done('failed', errs)
         else
-          done('failed', vim.trim(stderr))
+          done('success')
         end
       end)
     end)
@@ -997,24 +1004,23 @@ local function new_comment(pr_id, repo, line1, line2)
     return
   end
   util.hl_flash(buf, line1 - 1, line2 - 1)
-  gh.get_pr_data(pr_id, repo, nil, function(pr, err)
-    if not pr then
-      return util.msg(err or ('PR #%s not found'):format(pr_id), vim.log.levels.ERROR)
-    end
-    local range = info.start_line == info.end_line and tostring(info.end_line)
-      or ('%d..%d'):format(info.start_line, info.end_line)
-    local edit_info = { title = ('Comment on %s:%s'):format(info.file, range) }
-    vim.schedule(function()
-      comments.edit_comment('comment', pr_id, { '' }, edit_info, function(input)
-        local progress = util.new_progress_report('Sending comment...', vim.api.nvim_get_current_buf())
-        gh.new_comment(pr, input, info.file, info.start_line, info.end_line, info.side, repo, function(resp)
-          if resp['errors'] == nil then
-            progress('success', nil, 'Comment sent.')
-            M.refresh({ feat = 'pr', id = pr_id, repo = repo })
-          else
-            progress('failed', nil, 'Failed to send comment.')
-          end
-        end)
+  local pr, _ = state.get_pr_data(repo, pr_id)
+  if not pr then
+    return util.msg(('PR #%s not found'):format(pr_id), vim.log.levels.ERROR)
+  end
+  local range = info.start_line == info.end_line and tostring(info.end_line)
+    or ('%d..%d'):format(info.start_line, info.end_line)
+  local edit_info = { title = ('Comment on %s:%s'):format(info.file, range) }
+  vim.schedule(function()
+    comments.edit_comment('comment', pr_id, { '' }, edit_info, function(input)
+      local progress = util.new_progress_report('Sending comment...', vim.api.nvim_get_current_buf())
+      gh.new_comment(pr, input, info.file, info.start_line, info.end_line, info.side, repo, function(resp)
+        if resp['errors'] == nil then
+          progress('success', nil, 'Comment sent.')
+          M.refresh({ feat = 'pr', id = pr_id, repo = repo })
+        else
+          progress('failed', nil, 'Failed to send comment.')
+        end
       end)
     end)
   end)
@@ -1068,6 +1074,32 @@ function M.comment(args)
   end
 
   new_comment(id, repo, args.line1, args.line2)
+end
+
+
+--- Start a PR review
+---
+--- @return string?
+function M.start_review()
+  local _, id, repo = resolve_pr()
+  local pr_buf = state.get_buf('pr', repo, id, false)
+  local pr_data = state.get_pr_data(repo, id)
+  if not pr_data or not pr_data.node_id then
+    return util.msg(('Empty pr_data or node_id for PR #%s'):format(id), vim.log.levels.ERROR)
+  end
+  vim.schedule(function()
+    gh.start_review(pr_data.node_id, function(resp)
+      local review = vim.tbl_get(resp, 'data', 'addPullRequestReview', 'pullRequestReview')
+      if review == nil then
+        return util.msg(('Failed start a review for PR #%s'):format(id), vim.log.levels.ERROR)
+      else
+        local reviews = pr_data.reviews
+        table.insert(reviews, review)
+        state.set_b_key(assert(pr_buf), {'guh', 'pr_data', 'reviews'}, reviews)
+        return util.msg(('Started a review for PR#%s'):format(id), vim.log.levels.INFO)
+      end
+    end)
+  end)
 end
 
 --- Runs `gh pr edit <id>` (or `gh issue edit <id>`) in a :terminal.
