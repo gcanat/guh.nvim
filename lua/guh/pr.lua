@@ -438,6 +438,23 @@ local function toggle_draft(id, repo, is_draft)
   end)
 end
 
+--- check if there is a pending review
+---
+--- @param reviews table
+--- @return string?
+local function pending_review_id(reviews)
+  local next = next
+  local user = gh.get_user()
+  local _, pending_review = next(vim.tbl_filter(function(review)
+    return (review['state'] == 'PENDING') and (review['author']['login'] == user)
+  end, reviews))
+  if pending_review then
+    return pending_review['id']
+  else
+    return nil
+  end
+end
+
 --- Performs the "review PR" action. Shows a vim.ui.select picker unless `[count]` was given.
 ---
 --- Each action opens an editable `guh://<owner>/<repo>/review/<id>` buffer for the (optional) body.
@@ -455,7 +472,7 @@ function M.review_pr()
     comments.edit_comment('review', id, content, { title = heading }, function(input)
       local body = vim.trim(input)
       local done = util.progress(('%s…'):format(heading))
-      gh.submit_review(id, pr, gh_action, body, function(resp)
+      local cb = function(resp)
         if resp['errors'] then
           local errs = {}
           for err in resp['errors'] do
@@ -465,7 +482,13 @@ function M.review_pr()
         else
           done('success')
         end
-      end)
+      end
+      local review_id = pending_review_id(pr.reviews)
+      if review_id then
+        gh.review_pending_pr(review_id, gh_action, body, cb)
+      else
+        gh.review_pr(pr.node_id, gh_action, body, cb)
+      end
     end)
   end
 
@@ -1014,14 +1037,23 @@ local function new_comment(pr_id, repo, line1, line2)
   vim.schedule(function()
     comments.edit_comment('comment', pr_id, { '' }, edit_info, function(input)
       local progress = util.new_progress_report('Sending comment...', vim.api.nvim_get_current_buf())
-      gh.new_comment(pr, input, info.file, info.start_line, info.end_line, info.side, repo, function(resp)
+
+      --- @param resp table
+      local cb =  function(resp)
         if resp['errors'] == nil then
           progress('success', nil, 'Comment sent.')
           M.refresh({ feat = 'pr', id = pr_id, repo = repo })
         else
           progress('failed', nil, 'Failed to send comment.')
         end
-      end)
+      end
+
+      local review_id = pending_review_id(pr.reviews)
+      if review_id then
+        gh.new_review_comment(pr.node_id, review_id, input, info.file, info.start_line, info.end_line, info.side, repo, cb)
+      else
+        gh.new_single_comment(pr, input, info.file, info.start_line, info.end_line, info.side, repo, cb)
+      end
     end)
   end)
 end
