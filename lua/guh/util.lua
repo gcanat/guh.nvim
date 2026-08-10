@@ -328,6 +328,8 @@ function M.set_default_keymaps(buf)
   M.map_default(buf, 'n', 'gf', '<Plug>(guh-file)', 'Open the file at cursor, at current commit')
   M.map_default(buf, 'n', 'cr', '<Plug>(guh-thread)', 'Reply-to/Resolve a comment thread')
   M.map_default(buf, 'n', 'cv', '<Plug>(guh-viewed)', 'Toggle "Viewed" on diff-file at cursor')
+  M.map_default(buf, 'n', 'cs', '<Plug>(guh-subscribe)', 'Subscribe to Issue or PR')
+  M.map_default(buf, 'n', 'cS', '<Plug>(guh-unsubscribe)', 'Unsubscribe to Issue or PR')
 
   -- The builtin gitcommit/diff ftplugins don't map [[/]] ?
   local heading = [[\v^(diff --git a/|\(viewed\) )]]
