@@ -473,15 +473,7 @@ function M.review_pr()
       local body = vim.trim(input)
       local done = util.progress(('%s…'):format(heading))
       local cb = function(resp)
-        if resp['errors'] then
-          local errs = {}
-          for err in resp['errors'] do
-            table.insert(errs, err['message'])
-          end
-          done('failed', errs)
-        else
-          done('success')
-        end
+        done(resp['errors'] and 'failed' or 'success', util.gh_errors(resp))
       end
       local review_id = pending_review_id(pr.reviews)
       if review_id then
