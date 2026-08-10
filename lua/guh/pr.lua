@@ -707,6 +707,7 @@ function M.show_repo(focus, repo)
   )
 
   util.set_default_keymaps(buf)
+  vim.cmd([[set syntax=ghsummary]])
   util.run_cmds(buf, { term = true }, {
     {
       'gh',
