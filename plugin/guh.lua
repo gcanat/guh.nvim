@@ -92,6 +92,9 @@ end, { nargs = '?' })
 vim.api.nvim_create_user_command('GuhComment', function(args)
   require('guh.pr').comment(args)
 end, { bang = true, range = true })
+vim.api.nvim_create_user_command('GuhSubscribe', function(args)
+  require('guh.pr').subscribe(args)
+end, { bang = true })
 
 local opts = { silent = true }
 
@@ -144,6 +147,8 @@ end, opts)
 vim.keymap.set('n', '<Plug>(guh-review)', function()
   require('guh.pr').review_pr()
 end, opts)
+vim.keymap.set('n', '<Plug>(guh-subscribe)', '<cmd>GuhSubscribe<cr>', opts)
+vim.keymap.set('n', '<Plug>(guh-unsubscribe)', '<cmd>GuhSubscribe!<cr>', opts)
 
 -- Cursor-relative actions:
 vim.keymap.set('n', '<Plug>(guh-open)', '<cmd>Guh .<cr>', opts)

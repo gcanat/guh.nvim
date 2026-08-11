@@ -544,6 +544,49 @@ function M.set_notif_read(thread_id, on_done)
   end)
 end
 
+--- Subscribe to an Issue or PR
+---
+--- @param id string Issue or PR node_id
+--- @param sub_state 'IGNORED'|'SUBSCRIBED'|'UNSUBSCRIBED' Subscription state
+--- @param cb fun(resp: table)
+function M.subscribe(id, sub_state, cb)
+  vim.validate('id', id, 'string')
+  local query = [[
+    mutation($id: ID!, $state: SubscriptionState!) {
+      updateSubscription(input: { subscribableId: $id, state: $state }) {
+        subscribable { viewerSubscription }
+      }
+    }
+  ]]
+  gh_api('review_start', 'POST', 'graphql', {
+    { '-f', 'id=' .. id },
+    { '-f', 'state=' .. sub_state },
+    { '-f', 'query=' .. query },
+  }, cb)
+end
+
+--- Get the github id for an issue
+---
+--- @param repo string owner/repo string
+--- @param number integer Issue number
+--- @param cb fun(resp: table)
+function M.get_issue_id(repo, number, cb)
+  local owner_repo = vim.split(repo, '/')
+  local query = [[
+    query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        issue(number: $number) { id }
+      }
+    }
+  ]]
+  gh_api('review_start', 'POST', 'graphql', {
+    { '-f', 'repo=' .. owner_repo[2] },
+    { '-f', 'owner=' .. owner_repo[1] },
+    { '-F', 'number=' .. number },
+    { '-f', 'query=' .. query },
+  }, cb)
+end
+
 --- Note: The REST API takes a comment-id, not a thread-id. Any comment in the thread works.
 ---
 --- @param repo string "owner/repo"

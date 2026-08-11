@@ -1127,6 +1127,52 @@ function M.start_review()
   end)
 end
 
+--- call the gh API to apply the subscription
+---
+--- @param number integer|string
+--- @param gh_id string
+--- @param sub_state 'SUBSCRIBED'|'UNSUBSCRIBED'|'IGNORED'
+local function do_subscribe(number, gh_id, sub_state)
+  vim.schedule(function()
+    gh.subscribe(gh_id, sub_state, function(resp)
+      local viewer_sub = vim.tbl_get(resp, 'data', 'updateSubscription', 'subscribable', 'viewerSubscription')
+      if viewer_sub == nil then
+        local err = table.concat(util.gh_errors(resp), '\n')
+        return util.msg(('Failed to update subscription for Issue/PR %s. Error: %s'):format(number, err), vim.log.levels.ERROR)
+      else
+        return util.msg(('Issue/PR subscription updated: %s'):format(viewer_sub), vim.log.levels.INFO)
+      end
+    end)
+  end)
+end
+
+--- Subscribe to a PR or an Issue
+---
+--- @param args vim.api.keyset.create_user_command.command_args
+function M.subscribe(args)
+  local sub_state = args.bang and 'UNSUBSCRIBED' or 'SUBSCRIBED'
+  local buf = vim.api.nvim_get_current_buf()
+  local b_guh = state.get_b_guh(buf)
+  if b_guh == nil then return end
+  if b_guh.feat == 'issue' then
+    local id = b_guh.id
+    if id == nil then return end
+    local num_issue = assert(tonumber(id))
+    gh.get_issue_id(b_guh.repo, num_issue, function(resp)
+      local issue_id = vim.tbl_get(resp, 'data', 'repository', 'issue', 'id')
+      if issue_id == nil then
+        local err = table.concat(util.gh_errors(resp), '\n')
+        return util.msg(('Failed to get ID for Issue %s. Error: %s'):format(id, err), vim.log.levels.ERROR)
+      else
+        do_subscribe(id, issue_id, sub_state)
+      end
+    end)
+  elseif b_guh.feat == 'pr' then
+    do_subscribe(b_guh.id, b_guh.pr_data.node_id, sub_state)
+  end
+end
+
+
 --- Runs `gh pr edit <id>` (or `gh issue edit <id>`) in a :terminal.
 function M.edit_pr()
   local feat, id, repo = resolve_pr()
