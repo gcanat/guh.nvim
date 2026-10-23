@@ -3,6 +3,7 @@
 local Screen = require('test.functional.ui.screen')
 local n = require('test.functional.testnvim')()
 local t = require('test.testutil')
+local describe, it, before_each = t.describe, t.it, t.before_each
 
 local test_cwd = assert(os.getenv('TEST_CWD'))
 
@@ -34,68 +35,50 @@ end)
 describe('guh.gh', function()
   it('get_pr_data', function()
     n.exec_lua(function()
-      local async = require('async')
+      local async = vim.async
       local gh = require('guh.gh')
       local util = require('guh.util')
-      local system_async = async.wrap(3, util.system)
-      local get_pr_data_async = async.wrap(4, gh.get_pr_data)
+      local await_system = async.wrap(3, util.system)
+      local await_get_pr_data = async.wrap(4, gh.get_pr_data)
 
-      local function test_get_pr_data()
-        return async.run(function()
-          local r = assert(system_async({ 'gh', 'pr', 'list', '--json', 'number' }, nil))
-          local pr_num = assert(vim.json.decode(r.stdout)[1].number, 'failed to get a repo issue')
+      local task = async.run(function()
+        local r = assert(await_system({ 'gh', 'pr', 'list', '--json', 'number' }, nil))
+        local pr_num = assert(vim.json.decode(r.stdout)[1].number, 'failed to get a repo issue')
 
-          async.await(vim.schedule)
-          local pr = get_pr_data_async(pr_num, 'justinmk/guh.nvim', nil)
-          assert(pr, 'pr is nil')
-          assert(type(pr.number) == 'number', 'pr.number not number')
-          assert(type(pr.title) == 'string', 'pr.title not string')
-          assert(type(pr.author) == 'table', 'pr.author not table')
-        end)
-      end
-      local task = test_get_pr_data()
+        async.await(vim.schedule)
+        local pr = await_get_pr_data(pr_num, 'justinmk/guh.nvim', nil)
+        assert(pr, 'pr is nil')
+        assert(type(pr.number) == 'number', 'pr.number not number')
+        assert(type(pr.title) == 'string', 'pr.title not string')
+        assert(type(pr.author) == 'table', 'pr.author not table')
+      end)
       task:wait(5000)
     end)
   end)
 
   it('get_pr_data populates ci_jobs + get_pr_ci_log', function()
     n.exec_lua(function()
+      local async = vim.async
       local gh = require('guh.gh')
 
-      local done = false
-      local logs = nil
-      local err = nil
-
-      -- `pr_data.ci_jobs` is batched into the `get_pr_data` GraphQL query.
-      gh.get_pr_data(9, 'justinmk/guh.nvim', { force = true }, function(pr)
-        if not pr then
-          err = 'failed to get PR'
-          done = true
-          return
-        end
+      local task = async.run(function()
+        -- `pr_data.ci_jobs` is batched into the `get_pr_data` GraphQL query.
+        local pr = async.await(4, gh.get_pr_data, 9, 'justinmk/guh.nvim', { force = true })
+        assert(pr, 'failed to get PR')
         local jobs = pr.ci_jobs or {}
         assert(#jobs > 0, 'no CI jobs returned')
         assert(jobs[1].databaseId, 'job missing databaseId')
         assert(type(jobs[1].name) == 'string', 'job missing name')
 
-        gh.get_pr_ci_log(jobs[1].databaseId, 'justinmk/guh.nvim', function(job_logs, job_err)
-          logs = job_logs
-          err = job_err
-          done = true
-        end)
+        local logs, err = async.await(3, gh.get_pr_ci_log, jobs[1].databaseId, 'justinmk/guh.nvim')
+        -- Logs may have been purged by GitHub (90 day retention). Either logs or
+        -- a "log unavailable" error is acceptable; a crash or timeout is not.
+        assert(logs or err, 'no result returned')
+        if err then
+          assert(err:match('[Ll]og unavailable') or err:match('HTTP 410'), ('unexpected error: %s'):format(err))
+        end
       end)
-
-      local ok = vim.wait(15000, function()
-        return done
-      end, 100)
-      assert(ok, 'get_pr_ci_logs timed out')
-
-      -- Logs may have been purged by GitHub (90 day retention). Either logs or
-      -- a "log unavailable" error is acceptable; a crash or timeout is not.
-      assert(logs or err, 'no result returned')
-      if err then
-        assert(err:match('[Ll]og unavailable') or err:match('HTTP 410'), ('unexpected error: %s'):format(err))
-      end
+      task:wait(15000)
     end)
   end)
 
@@ -820,6 +803,72 @@ describe('util', function()
     t.eq({ owner = 'justinmk', repo = 'guh.nvim' }, parse_target('guh://justinmk/guh.nvim/'))
     -- Global status page.
     t.eq({ status = true }, parse_target('guh://status'))
+  end)
+end)
+
+describe('util_gb_tmp.goto_file_at_cursor()', function()
+  it('resolves "file:line:col" refs to open buffers (incl. URI bufs)', function()
+    local r = n.exec_lua(function()
+      local gb = require('guh.util_gb_tmp')
+
+      -- Scratch (nofile) target buffers: a filesystem-style path, a guh:// URI, and a 1-char name.
+      local function make_buf(name, n_lines)
+        local buf = vim.api.nvim_create_buf(true, true)
+        vim.api.nvim_buf_set_name(buf, name)
+        local lines = {}
+        for i = 1, (n_lines or 1) do
+          lines[i] = ('line %d text'):format(i)
+        end
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        return buf
+      end
+      local fbuf = make_buf('/tmp/proj/lua/guh/util.lua', 400)
+      local ubuf = make_buf('guh://owner/repo/pr/13', 3)
+      local abuf = make_buf('/tmp/proj/a', 1)
+
+      -- Place `word` as the cWORD in a scratch line, cursor on it, then resolve.
+      local function at(word)
+        local s = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(s, 0, -1, false, { 'see ' .. word .. ' here' })
+        vim.api.nvim_set_current_buf(s)
+        vim.api.nvim_win_set_cursor(0, { 1, 4 }) -- on the first char of `word`.
+        local buf = gb.goto_file_at_cursor()
+        return { buf = buf, pos = buf and vim.api.nvim_win_get_cursor(0) or nil }
+      end
+
+      return {
+        fbuf = fbuf,
+        ubuf = ubuf,
+        abuf = abuf,
+        basename = at('util.lua'), -- bare basename, no line.
+        with_line = at('util.lua:307'),
+        with_col = at('util.lua:307:5'),
+        punct = at('(util.lua:307),'), -- surrounding punctuation peeled.
+        grep_form = at('util.lua:307:'), -- trailing ":" (grep/rg output).
+        multiseg = at('lua/guh/util.lua'), -- multi-segment path suffix.
+        uri = at('guh://owner/repo/pr/13.'), -- URI buffer + trailing sentence dot.
+        clamp_line = at('util.lua:99999'), -- line past EOF clamps to last line.
+        clamp_col = at('util.lua:9:999'), -- col past EOL clamps.
+        bare_short = at('a'), -- trivial bare word: must NOT suffix-match.
+        rel_short = at('./a'), -- explicit relative path: matches "…/a".
+        unknown = at('nope.xyz:1'), -- no such buffer.
+      }
+    end)
+
+    t.eq(r.fbuf, r.basename.buf)
+    t.eq(r.fbuf, r.with_line.buf)
+    t.eq({ 307, 0 }, r.with_line.pos)
+    t.eq({ 307, 4 }, r.with_col.pos)
+    t.eq({ 307, 0 }, r.punct.pos)
+    t.eq({ 307, 0 }, r.grep_form.pos)
+    t.eq(r.fbuf, r.multiseg.buf)
+    t.eq({ 307, 0 }, r.multiseg.pos)
+    t.eq(r.ubuf, r.uri.buf)
+    t.eq(400, r.clamp_line.pos[1]) -- clamped to the buffer's last line.
+    t.eq(9, r.clamp_col.pos[1])
+    t.eq(nil, r.bare_short.buf) -- "a" alone is too loose to suffix-match.
+    t.eq(r.abuf, r.rel_short.buf) -- "./a" is an explicit path, so it may suffix-match.
+    t.eq(nil, r.unknown.buf)
   end)
 end)
 
